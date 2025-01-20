@@ -1,6 +1,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
+#include <psapi.h>
 #elif __linux__
 #include <iostream>
 #include <fstream>
@@ -99,16 +100,18 @@ DWORD WINAPI monitorThread(LPVOID lpParam) {
     struct ThreadData {
         HANDLE hProcess;
         std::vector<MemoryConfig> configs;
+        unsigned long baseAddress;
     };
     ThreadData* data = static_cast<ThreadData*>(lpParam);
     HANDLE hProcess = data->hProcess;
     std::vector<MemoryConfig> configs = data->configs;
+    unsigned long baseAddress = data->baseAddress;
 
     while (true) {
         for (const auto& config : configs) {
             BYTE buffer[sizeof(unsigned int)]; // 使用最大可能的类型大小
             SIZE_T bytesRead;
-            if (!ReadProcessMemory(hProcess, (LPCVOID)config.address, buffer, config.typeSize, &bytesRead)) {
+            if (!ReadProcessMemory(hProcess, (LPCVOID)(config.address + baseAddress), buffer, config.typeSize, &bytesRead)) {
                 std::cerr << "ReadProcessMemory failed (" << GetLastError() << ").\n";
                 continue;
             }
@@ -117,10 +120,10 @@ DWORD WINAPI monitorThread(LPVOID lpParam) {
 
             if (actualValue != config.value) {
                 SIZE_T bytesWritten;
-                if (!WriteProcessMemory(hProcess, (LPVOID)config.address, &config.value, config.typeSize, &bytesWritten)) {
+                if (!WriteProcessMemory(hProcess, (LPVOID)(config.address + baseAddress), &config.value, config.typeSize, &bytesWritten)) {
                     std::cerr << "WriteProcessMemory failed (" << GetLastError() << ").\n";
                 } else {
-                    std::cout << "Address: 0x" << std::hex << config.address << " changed to: " << std::dec << config.value << std::endl;
+                    std::cout << "Address: 0x" << std::hex << (config.address + baseAddress) << " changed to: " << std::dec << config.value << std::endl;
                 }
             }
         }
@@ -192,6 +195,14 @@ int main(int argc, char* argv[]) {
     // 创建子进程
 #ifdef _WIN32
     PROCESS_INFORMATION pi = createChildProcess(commandLine);
+    
+    // 获取子进程基地址
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    unsigned long baseAddress = 0;
+    if (EnumProcessModules(pi.hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        baseAddress = (unsigned long)hMods[0];
+    }
 #elif __linux__
     pid_t pid = createChildProcess(commandLine);
 #endif
@@ -204,9 +215,11 @@ int main(int argc, char* argv[]) {
     struct ThreadData {
         HANDLE hProcess;
         std::vector<MemoryConfig> configs;
+        unsigned long baseAddress;
     } data;
     data.hProcess = pi.hProcess;
     data.configs = configs;
+    data.baseAddress = baseAddress;
 
     HANDLE hThread = CreateThread(NULL, 0, monitorThread, &data, 0, NULL);
     if (hThread == NULL) {
