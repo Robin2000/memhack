@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <iomanip>
 
 // 内存配置结构体 (处理 config.txt)
 struct MemoryConfig {
@@ -100,40 +101,75 @@ std::vector<AsmConfig> readAsmConfigFile(const std::string& filename) {
     std::string line;
     while (std::getline(file, line)) {
         AsmConfig asmConfig;
-        std::stringstream ss(line);
-        std::string addressStr, asmStr;
-        ss >> std::hex >> asmConfig.address >> asmStr;
-        asmConfig.asmInstruction = asmStr;
+
+        // 使用空格分割地址和指令部分
+        std::istringstream ss(line);
+        ss >> std::hex >> asmConfig.address;  // 读取地址
+        std::getline(ss, asmConfig.asmInstruction);  // 读取剩余的汇编指令部分
+
+        // 去除指令前的空格
+        if (!asmConfig.asmInstruction.empty() && asmConfig.asmInstruction[0] == ' ') {
+            asmConfig.asmInstruction.erase(0, 1);  // 删除开头的空格
+        }
 
         asmConfigs.push_back(asmConfig);
     }
     return asmConfigs;
 }
 
-// 编译汇编指令为机器码 (调用nasm)
 void compileAsmToMachineCode(const std::string& asmCode, const std::string& outputFile) {
-    // 将汇编代码写入临时文件
-    std::ofstream tempFile("temp.asm");
-    if (!tempFile) {
-        std::cerr << "Failed to create temporary assembly file.\n";
-        return;
+    // 创建临时文件
+    std::string tempFile = "temp.asm";
+    std::ofstream outFile(tempFile);
+    if (!outFile) {
+        std::cerr << "Failed to open temp.asm for writing.\n";
+        exit(1);
     }
-    tempFile << "section .text\n";
-    tempFile << "global _start\n";
-    tempFile << "_start:\n";
-    tempFile << asmCode;  // 汇编指令
-    tempFile.close();
 
-    // 调用 nasm 编译汇编代码
-    std::string command = "nasm -f elf32 temp.asm -o " + outputFile;
-    int result = system(command.c_str());
-    if (result != 0) {
+    // 写入汇编指令，确保只有一行指令
+    outFile << asmCode;
+    outFile.close();
+
+    // 调用nasm编译汇编文件为二进制，使用 bin 模式来确保机器码文件
+    std::string nasmCommand = "nasm -f bin -o " + outputFile + " temp.asm";
+    if (system(nasmCommand.c_str()) != 0) {
         std::cerr << "Failed to compile assembly code with nasm.\n";
-        return;
+        exit(1);
     }
 
-    // 删除临时汇编文件
-    remove("temp.asm");
+    // 检查是否生成了目标文件
+    std::ifstream machineCodeFile(outputFile, std::ios::binary);
+    if (!machineCodeFile) {
+        std::cerr << "Failed to open machine code file: " << outputFile << "\n";
+        exit(1);
+    }
+
+    // 获取文件大小并读取内容
+    machineCodeFile.seekg(0, std::ios::end);
+    std::streamsize size = machineCodeFile.tellg();
+    if (size <= 0) {
+        std::cerr << "Machine code file is empty.\n";
+        exit(1);
+    }
+
+    // 输出字节码长度
+    std::cout << "Machine code file size: " << size << " bytes\n";
+
+    // 读取并输出字节内容（16进制）
+    machineCodeFile.seekg(0, std::ios::beg);
+    std::vector<unsigned char> buffer(size);
+    machineCodeFile.read(reinterpret_cast<char*>(buffer.data()), size);
+
+    std::cout << "Machine code (hex):\n";
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i] << " ";
+        if ((i + 1) % 16 == 0) { // 每行16个字节换行
+            std::cout << std::endl;
+        }
+    }
+    std::cout << std::dec << std::endl; // 恢复为十进制输出
+
+    machineCodeFile.close();
 }
 
 
@@ -168,7 +204,7 @@ void executeAsmInstruction(HANDLE hProcess, uintptr_t address, const std::string
     writeMachineCodeToMemory(hProcess, address, outputFile);
 
     // 删除生成的机器码文件
-    remove(outputFile.c_str());
+    //remove(outputFile.c_str());
 }
 
 // 监控内存值修改的线程 (Windows)
