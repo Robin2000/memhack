@@ -11,3 +11,6 @@ CTestTestfile.cmake
 _deps
 CMakeUserPresets.json
 /build
+/x64
+/MemoryMonitor.dir
+/Debug

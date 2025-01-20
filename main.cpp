@@ -1,3 +1,6 @@
+﻿#include <cstdint>  // 添加uintptr_t支持
+
+// 使用标准UTF-8编码
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
@@ -31,11 +34,17 @@
 #include <vector>
 #include <sstream>
 
-// 内存配置结构体
+// 内存配置结构体 (处理 config.txt)
 struct MemoryConfig {
-    unsigned long address;
+    uintptr_t address;  // 使用uintptr_t
     size_t typeSize;
-    unsigned long value;
+    uintptr_t value;    // 使用uintptr_t
+};
+
+// 汇编指令配置结构体 (处理 config_asm.txt)
+struct AsmConfig {
+    uintptr_t address;  // 使用uintptr_t
+    std::string asmInstruction;
 };
 
 // 解析命令行参数
@@ -48,7 +57,7 @@ std::string getCommandLine(int argc, char* argv[]) {
     }
 }
 
-// 读取配置文件
+// 读取内存配置文件 (config.txt)
 std::vector<MemoryConfig> readConfigFile(const std::string& filename) {
     std::vector<MemoryConfig> configs;
     std::ifstream file(filename);
@@ -79,8 +88,85 @@ std::vector<MemoryConfig> readConfigFile(const std::string& filename) {
     return configs;
 }
 
+// 读取汇编指令配置文件 (config_asm.txt)
+std::vector<AsmConfig> readAsmConfigFile(const std::string& filename) {
+    std::vector<AsmConfig> asmConfigs;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error opening asm config file: " << filename << "\n";
+        exit(1);
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        AsmConfig asmConfig;
+        std::stringstream ss(line);
+        std::string addressStr, asmStr;
+        ss >> std::hex >> asmConfig.address >> asmStr;
+        asmConfig.asmInstruction = asmStr;
+
+        asmConfigs.push_back(asmConfig);
+    }
+    return asmConfigs;
+}
+
+// 执行汇编指令 (仅执行一次)
+void executeAsmInstruction(HANDLE hProcess, uintptr_t address, const std::string& asmInstruction) {
+    std::vector<BYTE> code;
+    // 这里假设汇编指令已经被转换为字节码
+    // 可以使用一些工具或库来将汇编指令转换为字节码，以下是简化的处理
+
+    size_t requiredSize = asmInstruction.length();  // 根据指令长度设定目标字节数
+    // 填充NOP指令
+    code.resize(requiredSize, 0x90);  // 0x90是x86架构的NOP指令
+
+    SIZE_T bytesWritten;
+    if (!WriteProcessMemory(hProcess, reinterpret_cast<LPVOID>(address), code.data(), code.size(), &bytesWritten)) {
+        std::cerr << "WriteProcessMemory failed (" << GetLastError() << ").\n";
+    }
+}
+
+// 监控内存值修改的线程 (Windows)
 #ifdef _WIN32
+DWORD WINAPI monitorThread(LPVOID lpParam) {
+    struct ThreadData {
+        HANDLE hProcess;
+        std::vector<MemoryConfig> configs;
+        uintptr_t baseAddress;  // 使用uintptr_t
+    };
+    ThreadData* data = static_cast<ThreadData*>(lpParam);
+    HANDLE hProcess = data->hProcess;
+    std::vector<MemoryConfig> configs = data->configs;
+    uintptr_t baseAddress = data->baseAddress;
+
+    while (true) {
+        for (const auto& config : configs) {
+            BYTE buffer[sizeof(unsigned int)];
+            SIZE_T bytesRead;
+            if (!ReadProcessMemory(hProcess, reinterpret_cast<LPCVOID>(config.address + baseAddress), buffer, config.typeSize, &bytesRead)) {
+                std::cerr << "ReadProcessMemory failed (" << GetLastError() << ").\n";
+                continue;
+            }
+            uintptr_t actualValue;
+            memcpy(&actualValue, buffer, config.typeSize);
+
+            if (actualValue != config.value) {
+                SIZE_T bytesWritten;
+                if (!WriteProcessMemory(hProcess, reinterpret_cast<LPVOID>(config.address + baseAddress), &config.value, config.typeSize, &bytesWritten)) {
+                    std::cerr << "WriteProcessMemory failed (" << GetLastError() << ").\n";
+                } else {
+                    std::cout << "Address: 0x" << std::hex << (config.address + baseAddress) << " changed to: " << std::dec << config.value << std::endl;
+                }
+            }
+        }
+        Sleep(100);
+    }
+    return 0;
+}
+#endif
+
 // 创建子进程 (Windows)
+#ifdef _WIN32
 PROCESS_INFORMATION createChildProcess(const std::string& commandLine) {
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
@@ -94,47 +180,10 @@ PROCESS_INFORMATION createChildProcess(const std::string& commandLine) {
     }
     return pi;
 }
-
-// 监控线程 (Windows)
-DWORD WINAPI monitorThread(LPVOID lpParam) {
-    struct ThreadData {
-        HANDLE hProcess;
-        std::vector<MemoryConfig> configs;
-        unsigned long baseAddress;
-    };
-    ThreadData* data = static_cast<ThreadData*>(lpParam);
-    HANDLE hProcess = data->hProcess;
-    std::vector<MemoryConfig> configs = data->configs;
-    unsigned long baseAddress = data->baseAddress;
-
-    while (true) {
-        for (const auto& config : configs) {
-            BYTE buffer[sizeof(unsigned int)]; // 使用最大可能的类型大小
-            SIZE_T bytesRead;
-            if (!ReadProcessMemory(hProcess, (LPCVOID)(config.address + baseAddress), buffer, config.typeSize, &bytesRead)) {
-                std::cerr << "ReadProcessMemory failed (" << GetLastError() << ").\n";
-                continue;
-            }
-            unsigned long actualValue;
-            memcpy(&actualValue, buffer, config.typeSize);
-
-            if (actualValue != config.value) {
-                SIZE_T bytesWritten;
-                if (!WriteProcessMemory(hProcess, (LPVOID)(config.address + baseAddress), &config.value, config.typeSize, &bytesWritten)) {
-                    std::cerr << "WriteProcessMemory failed (" << GetLastError() << ").\n";
-                } else {
-                    std::cout << "Address: 0x" << std::hex << (config.address + baseAddress) << " changed to: " << std::dec << config.value << std::endl;
-                }
-            }
-        }
-        Sleep(100);
-    }
-    return 0;
-}
-
-#elif __linux__
+#endif
 
 // 创建子进程 (Linux)
+#ifdef __linux__
 pid_t createChildProcess(const std::string& commandLine) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -147,45 +196,6 @@ pid_t createChildProcess(const std::string& commandLine) {
     }
     return pid;
 }
-
-// 监控线程 (Linux)
-void* monitorThread(void* arg) {
-    struct ThreadData {
-        pid_t pid;
-        std::vector<MemoryConfig> configs;
-    };
-    ThreadData* data = static_cast<ThreadData*>(arg);
-    pid_t pid = data->pid;
-    std::vector<MemoryConfig> configs = data->configs;
-
-    if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) < 0) {
-        perror("ptrace attach");
-        return NULL;
-    }
-    waitpid(pid, NULL, 0);
-
-    while (true) {
-        for (const auto& config : configs) {
-            unsigned long data_read;
-            errno = 0;
-            data_read = ptrace(PTRACE_PEEKDATA, pid, (void*)config.address, NULL);
-            if(errno != 0) {
-                perror("ptrace peekdata");
-                continue;
-            }
-            if (data_read != config.value) {
-                if (ptrace(PTRACE_POKEDATA, pid, (void*)config.address, config.value) < 0) {
-                    perror("ptrace pokedata");
-                } else {
-                    std::cout << "Address: 0x" << std::hex << config.address << " changed to: " << std::dec << config.value << std::endl;
-                }
-            }
-        }
-        usleep(100000); // 100ms
-    }
-    return NULL;
-}
-
 #endif
 
 int main(int argc, char* argv[]) {
@@ -199,9 +209,9 @@ int main(int argc, char* argv[]) {
     // 获取子进程基地址
     HMODULE hMods[1024];
     DWORD cbNeeded;
-    unsigned long baseAddress = 0;
+    uintptr_t baseAddress = 0;
     if (EnumProcessModules(pi.hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        baseAddress = (unsigned long)hMods[0];
+        baseAddress = reinterpret_cast<uintptr_t>(hMods[0]);
     }
 #elif __linux__
     pid_t pid = createChildProcess(commandLine);
@@ -209,13 +219,25 @@ int main(int argc, char* argv[]) {
 
     // 读取配置文件
     std::vector<MemoryConfig> configs = readConfigFile("config.txt");
+    std::vector<AsmConfig> asmConfigs = readAsmConfigFile("config_asm.txt");
 
-    // 创建监控线程
+    // 执行汇编指令 (仅一次)
+#ifdef _WIN32
+    for (const auto& asmConfig : asmConfigs) {
+        executeAsmInstruction(pi.hProcess, asmConfig.address + baseAddress, asmConfig.asmInstruction);
+    }
+#elif __linux__
+    for (const auto& asmConfig : asmConfigs) {
+        executeAsmInstruction(pid, asmConfig.address, asmConfig.asmInstruction);
+    }
+#endif
+
+    // 创建监控线程 (Windows)
 #ifdef _WIN32
     struct ThreadData {
         HANDLE hProcess;
         std::vector<MemoryConfig> configs;
-        unsigned long baseAddress;
+        uintptr_t baseAddress;
     } data;
     data.hProcess = pi.hProcess;
     data.configs = configs;
