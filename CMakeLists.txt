@@ -14,6 +14,16 @@ endif()
 
 add_executable(MemoryMonitor main.cpp)
 
+# Set output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
+
+# Override Visual Studio's default output directories
+set_property(TARGET MemoryMonitor PROPERTY RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set_property(TARGET MemoryMonitor PROPERTY RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+set_property(TARGET MemoryMonitor PROPERTY RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR})
+
 # 根据平台设置编译选项和链接库
 if(WIN32)
     target_link_libraries(MemoryMonitor 

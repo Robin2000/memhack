@@ -110,20 +110,65 @@ std::vector<AsmConfig> readAsmConfigFile(const std::string& filename) {
     return asmConfigs;
 }
 
-// 执行汇编指令 (仅执行一次)
-void executeAsmInstruction(HANDLE hProcess, uintptr_t address, const std::string& asmInstruction) {
-    std::vector<BYTE> code;
-    // 这里假设汇编指令已经被转换为字节码
-    // 可以使用一些工具或库来将汇编指令转换为字节码，以下是简化的处理
+// 编译汇编指令为机器码 (调用nasm)
+void compileAsmToMachineCode(const std::string& asmCode, const std::string& outputFile) {
+    // 将汇编代码写入临时文件
+    std::ofstream tempFile("temp.asm");
+    if (!tempFile) {
+        std::cerr << "Failed to create temporary assembly file.\n";
+        return;
+    }
+    tempFile << "section .text\n";
+    tempFile << "global _start\n";
+    tempFile << "_start:\n";
+    tempFile << asmCode;  // 汇编指令
+    tempFile.close();
 
-    size_t requiredSize = asmInstruction.length();  // 根据指令长度设定目标字节数
-    // 填充NOP指令
-    code.resize(requiredSize, 0x90);  // 0x90是x86架构的NOP指令
+    // 调用 nasm 编译汇编代码
+    std::string command = "nasm -f elf32 temp.asm -o " + outputFile;
+    int result = system(command.c_str());
+    if (result != 0) {
+        std::cerr << "Failed to compile assembly code with nasm.\n";
+        return;
+    }
 
+    // 删除临时汇编文件
+    remove("temp.asm");
+}
+
+
+// 将机器码写入进程的内存
+void writeMachineCodeToMemory(HANDLE hProcess, uintptr_t address, const std::string& machineCodeFile) {
+    // 读取机器码文件
+    std::ifstream file(machineCodeFile, std::ios::binary);
+    if (!file) {
+        std::cerr << "Failed to open machine code file: " << machineCodeFile << std::endl;
+        return;
+    }
+
+    // 读取文件内容到字节数组
+    std::vector<BYTE> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    // 将机器码写入目标进程的内存
     SIZE_T bytesWritten;
     if (!WriteProcessMemory(hProcess, reinterpret_cast<LPVOID>(address), code.data(), code.size(), &bytesWritten)) {
-        std::cerr << "WriteProcessMemory failed (" << GetLastError() << ").\n";
+        std::cerr << "Failed to write machine code to memory.\n";
+    } else {
+        std::cout << "Successfully wrote machine code to memory.\n";
     }
+}
+
+// 执行汇编指令 (仅执行一次)
+void executeAsmInstruction(HANDLE hProcess, uintptr_t address, const std::string& asmInstruction) {
+    // 将汇编指令编译为机器码并写入内存
+    std::string outputFile = "machine_code.obj";
+    compileAsmToMachineCode(asmInstruction, outputFile);
+
+    // 将机器码写入目标进程的内存
+    writeMachineCodeToMemory(hProcess, address, outputFile);
+
+    // 删除生成的机器码文件
+    remove(outputFile.c_str());
 }
 
 // 监控内存值修改的线程 (Windows)
@@ -168,13 +213,14 @@ DWORD WINAPI monitorThread(LPVOID lpParam) {
 // 创建子进程 (Windows)
 #ifdef _WIN32
 PROCESS_INFORMATION createChildProcess(const std::string& commandLine) {
-    STARTUPINFO si;
+    STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
 
-    if (!CreateProcess(NULL, const_cast<char*>(commandLine.c_str()), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    // 使用ANSI版本的CreateProcess
+    if (!CreateProcessA(NULL, const_cast<char*>(commandLine.c_str()), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         std::cerr << "CreateProcess failed (" << GetLastError() << ").\n";
         exit(1);
     }
