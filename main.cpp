@@ -201,5 +201,42 @@ int main(int argc, char* argv[]) {
 
     // 创建监控线程
 #ifdef _WIN32
-    struct ThreadData data;
-    data.hProcess = pi.h
+    struct ThreadData {
+        HANDLE hProcess;
+        std::vector<MemoryConfig> configs;
+    } data;
+    data.hProcess = pi.hProcess;
+    data.configs = configs;
+
+    HANDLE hThread = CreateThread(NULL, 0, monitorThread, &data, 0, NULL);
+    if (hThread == NULL) {
+        std::cerr << "CreateThread failed (" << GetLastError() << ").\n";
+        exit(1);
+    }
+
+    // 等待子进程结束
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    // 清理
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+#elif __linux__
+    struct ThreadData {
+        pid_t pid;
+        std::vector<MemoryConfig> configs;
+    } data;
+    data.pid = pid;
+    data.configs = configs;
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, monitorThread, &data) != 0) {
+        std::cerr << "pthread_create failed.\n";
+        exit(1);
+    }
+
+    // 等待子进程结束
+    waitpid(pid, NULL, 0);
+#endif
+
+    return 0;
+}
