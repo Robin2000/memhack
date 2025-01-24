@@ -6,7 +6,8 @@
                 "${workspaceFolder}/**",
                 "${env:WindowsSdkDir}Include/**",
                 "${env:MSVC_INCLUDE_PATH}",
-                "${env:INCLUDE}"
+                "${env:INCLUDE}",
+                "D:/Program/keystone-0.9.2-win32/include"
             ],
             "defines": [
                 "_DEBUG",

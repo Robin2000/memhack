@@ -1,4 +1,5 @@
 ﻿#include <cstdint>  // 添加uintptr_t支持
+#include <D:/Program/keystone-0.9.2-win32/include/keystone/keystone.h>  // Keystone引擎头文件
 
 // 使用标准UTF-8编码
 #ifdef _WIN32
@@ -117,59 +118,67 @@ std::vector<AsmConfig> readAsmConfigFile(const std::string& filename) {
     return asmConfigs;
 }
 
-void compileAsmToMachineCode(const std::string& asmCode, const std::string& outputFile) {
-    // 创建临时文件
-    std::string tempFile = "temp.asm";
-    std::ofstream outFile(tempFile);
-    if (!outFile) {
-        std::cerr << "Failed to open temp.asm for writing.\n";
+// 使用Keystone编译汇编指令
+std::vector<uint8_t> compileAsmToMachineCode(const std::string& asmCode, size_t originalSize) {
+    ks_engine *ks;
+    ks_err err;
+    size_t count;
+    unsigned char *encode;
+    size_t size;
+
+    // 初始化Keystone引擎
+    err = ks_open(KS_ARCH_X86, KS_MODE_32, &ks);
+    if (err != KS_ERR_OK) {
+        std::cerr << "Failed to initialize Keystone engine: " << ks_strerror(err) << "\n";
         exit(1);
     }
 
-    // 写入汇编指令，确保只有一行指令
-    outFile << asmCode;
-    outFile.close();
-
-    // 调用nasm编译汇编文件为二进制，使用 bin 模式来确保机器码文件
-    std::string nasmCommand = "nasm -f bin -o " + outputFile + " temp.asm";
-    if (system(nasmCommand.c_str()) != 0) {
-        std::cerr << "Failed to compile assembly code with nasm.\n";
+    // 编译汇编指令
+    if (ks_asm(ks, asmCode.c_str(), 0, &encode, &size, &count) != KS_ERR_OK) {
+        std::cerr << "Failed to assemble code: " << ks_strerror(ks_errno(ks)) << "\n";
+        ks_close(ks);
         exit(1);
     }
 
-    // 检查是否生成了目标文件
-    std::ifstream machineCodeFile(outputFile, std::ios::binary);
-    if (!machineCodeFile) {
-        std::cerr << "Failed to open machine code file: " << outputFile << "\n";
-        exit(1);
+    // 处理生成的机器码长度
+    std::vector<uint8_t> machineCode(encode, encode + size);
+    
+    if (size < originalSize) {
+        // 如果生成的机器码较短，用NOP填充
+        machineCode.resize(originalSize, 0x90); // 0x90 = NOP
+    } else if (size > originalSize) {
+        // 如果生成的机器码较长，使用JMP跳转
+        // 计算跳转偏移量（假设空闲区域在0x10000000）
+        uint32_t jumpOffset = 0x10000000 - (0x1000 + size);
+        std::vector<uint8_t> jumpCode = {0xE9}; // JMP指令
+        // 添加跳转偏移量（小端序）
+        jumpCode.push_back(jumpOffset & 0xFF);
+        jumpCode.push_back((jumpOffset >> 8) & 0xFF);
+        jumpCode.push_back((jumpOffset >> 16) & 0xFF);
+        jumpCode.push_back((jumpOffset >> 24) & 0xFF);
+        
+        // 将跳转指令放在原位置
+        machineCode = jumpCode;
+        // 在空闲区域写入新指令
+        // （实际实现中需要先分配内存并写入）
     }
 
-    // 获取文件大小并读取内容
-    machineCodeFile.seekg(0, std::ios::end);
-    std::streamsize size = machineCodeFile.tellg();
-    if (size <= 0) {
-        std::cerr << "Machine code file is empty.\n";
-        exit(1);
-    }
-
-    // 输出字节码长度
-    std::cout << "Machine code file size: " << size << " bytes\n";
-
-    // 读取并输出字节内容（16进制）
-    machineCodeFile.seekg(0, std::ios::beg);
-    std::vector<unsigned char> buffer(size);
-    machineCodeFile.read(reinterpret_cast<char*>(buffer.data()), size);
-
-    std::cout << "Machine code (hex):\n";
-    for (size_t i = 0; i < buffer.size(); ++i) {
-        std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i] << " ";
-        if ((i + 1) % 16 == 0) { // 每行16个字节换行
+    // 输出调试信息
+    std::cout << "Generated machine code (" << machineCode.size() << " bytes):\n";
+    for (size_t i = 0; i < machineCode.size(); ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                 << (int)machineCode[i] << " ";
+        if ((i + 1) % 16 == 0) {
             std::cout << std::endl;
         }
     }
-    std::cout << std::dec << std::endl; // 恢复为十进制输出
+    std::cout << std::dec << std::endl;
 
-    machineCodeFile.close();
+    // 释放资源
+    ks_free(encode);
+    ks_close(ks);
+
+    return machineCode;
 }
 
 
@@ -196,12 +205,24 @@ void writeMachineCodeToMemory(HANDLE hProcess, uintptr_t address, const std::str
 
 // 执行汇编指令 (仅执行一次)
 void executeAsmInstruction(HANDLE hProcess, uintptr_t address, const std::string& asmInstruction) {
-    // 将汇编指令编译为机器码并写入内存
-    std::string outputFile = "machine_code.obj";
-    compileAsmToMachineCode(asmInstruction, outputFile);
+    // 获取原始机器码长度
+    SIZE_T bytesRead;
+    BYTE originalCode[16];
+    if (!ReadProcessMemory(hProcess, reinterpret_cast<LPCVOID>(address), originalCode, sizeof(originalCode), &bytesRead)) {
+        std::cerr << "Failed to read original machine code.\n";
+        return;
+    }
+
+    // 编译汇编指令为机器码
+    auto machineCode = compileAsmToMachineCode(asmInstruction, bytesRead);
 
     // 将机器码写入目标进程的内存
-    writeMachineCodeToMemory(hProcess, address, outputFile);
+    SIZE_T bytesWritten;
+    if (!WriteProcessMemory(hProcess, reinterpret_cast<LPVOID>(address), machineCode.data(), machineCode.size(), &bytesWritten)) {
+        std::cerr << "Failed to write machine code to memory.\n";
+    } else {
+        std::cout << "Successfully wrote machine code to memory.\n";
+    }
 
     // 删除生成的机器码文件
     //remove(outputFile.c_str());
